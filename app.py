@@ -20,7 +20,6 @@ ZIPNOVA_DOMAIN = "https://api.zipnova.com.ar"
 OWN_FLEET_CARRIER_ID = 7
 STATUS_CANDIDATES = ["en_camino", "En camino", "in_transit", "in-transit"]
 
-# Memorias separadas para no mezclar despachos con entregas
 FILE_DISPATCHED = Path(".dispatched_zipnova.json")
 FILE_DELIVERED = Path(".delivered_zipnova.json")
 
@@ -166,8 +165,7 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown("### 📦 1. Crear Etiquetas")
     
-    # Botón preparatorio para armar la tabla
-if st.button("🔎 Buscar Pedidos Pendientes", use_container_width=True):
+    if st.button("🔎 Buscar Pedidos Pendientes", use_container_width=True):
         with st.spinner("Buscando pedidos en Zipnova..."):
             dispatched = _load_memory(FILE_DISPATCHED)
             try:
@@ -188,8 +186,7 @@ if st.button("🔎 Buscar Pedidos Pendientes", use_container_width=True):
             except Exception as e:
                 st.error(f"Error de conexión: {e}")
 
-    # Botón de acción principal
-if st.button("🔍 Crear etiquetas y despachar", type="primary", use_container_width=True):
+    if st.button("🔍 Crear etiquetas y despachar", type="primary", use_container_width=True):
         if not st.session_state.pedidos:
             st.warning("⚠️ Primero debes hacer clic en 'Buscar Pedidos Pendientes'.")
         else:
@@ -236,59 +233,10 @@ with col2:
             st.warning("⚠️ Por favor, sube el archivo Excel en el recuadro de abajo antes de presionar el botón.")
         else:
             with st.spinner("Descargando paquetes 'En camino' y cruzando datos..."):
-                try:
                     envios_zipnova = list_in_transit()
                     if not envios_zipnova:
                         st.info("No hay envíos en camino en Zipnova para revisar.")
                     else:
                         df = pd.read_excel(archivo_datos)
                         df['Estado_Limpio'] = df['Estado'].astype(str).str.lower().str.strip()
-                        df_entregados = df[df['Estado_Limpio'].str.contains('entregado|2d visita|2da visita', case=False, na=False)]
                         
-                        col_nombre = next((c for c in df.columns if 'nombre' in c.lower() and ('de' in c.lower() or 'dest' in c.lower())), None)
-                        
-                        ok_count = 0
-                        delivered = _load_memory(FILE_DELIVERED)
-                        
-                        for envio in envios_zipnova:
-                            zipnova_id = str(envio.get("id"))
-                            zipnova_name = str(envio.get("destination", {}).get("name", "")).strip().lower()
-                            zipnova_orden = str(envio.get("external_reference") or envio.get("external_id") or envio.get("order_number") or "").strip().lower()
-                            
-                            if zipnova_id in delivered: continue
-                                
-                            match_found = False
-                            for _, row in df_entregados.iterrows():
-                                excel_tracking = str(row.get('Número Tracking', '')).lower()
-                                excel_name = str(row.get(col_nombre, '')).lower() if col_nombre else ''
-                                
-                                if (zipnova_id and zipnova_id in excel_tracking) or \
-                                   (zipnova_orden and zipnova_orden in excel_tracking) or \
-                                   (zipnova_name and zipnova_name in excel_name):
-                                    match_found = True
-                                    break
-                                    
-                            if match_found:
-                                if update_zipnova_delivered(zipnova_id):
-                                    delivered.add(zipnova_id)
-                                    ok_count += 1
-                                    
-                        _save_memory(FILE_DELIVERED, delivered)
-                        st.success(f"✅ ¡TAREA FINALIZADA! Se actualizaron {ok_count} paquetes a 'Entregado'.")
-                        
-                except Exception as e:
-                    st.error(f"❌ Error procesando el archivo: {e}")
-
-# --- TABLA DE VISTA PREVIA ---
-if st.session_state.pedidos:
-    st.write("---")
-    st.write("### 📋 Vista previa de paquetes listos para despachar:")
-    datos_tabla = []
-    for p in st.session_state.pedidos:
-        datos_tabla.append({
-            "ID Zipnova": p.get("id"),
-            "Cliente": p.get("destination", {}).get("name"),
-            "Localidad": p.get("destination", {}).get("city"),
-            "Fecha": _fmt_fecha_dd_mm_yyyy(p.get("created_at"))
-        })
-    st.table(pd.DataFrame(datos_tabla))
