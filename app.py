@@ -167,7 +167,7 @@ with col1:
     st.markdown("### 📦 1. Crear Etiquetas")
     
     # Botón preparatorio para armar la tabla
-    if st.button("🔎 Buscar Pedidos Pendientes", use_container_width=True):
+if st.button("🔎 Buscar Pedidos Pendientes", use_container_width=True):
         with st.spinner("Buscando pedidos en Zipnova..."):
             dispatched = _load_memory(FILE_DISPATCHED)
             try:
@@ -189,7 +189,7 @@ with col1:
                 st.error(f"Error de conexión: {e}")
 
     # Botón de acción principal
-    if st.button("🔍 Crear etiquetas y despachar", type="primary", use_container_width=True):
+if st.button("🔍 Crear etiquetas y despachar", type="primary", use_container_width=True):
         if not st.session_state.pedidos:
             st.warning("⚠️ Primero debes hacer clic en 'Buscar Pedidos Pendientes'.")
         else:
