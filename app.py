@@ -87,12 +87,25 @@ def map_zipnova_to_lightdata(detail: dict):
     }
 
 # ====== FUNCIONES DE CONEXIÓN APIS ======
-def list_ready_to_ship():
+def list_ready_to_ship(max_pages=10, per_page=50):
     url = f"{ZIPNOVA_DOMAIN}/v2/shipments"
-    params = {"account_id": ZIPNOVA_ACCOUNT_ID, "status": "ready_to_ship", "per_page": 50}
-    r = requests.get(url, params=params, auth=HTTPBasicAuth(ZIPNOVA_KEY, ZIPNOVA_SECRET), timeout=30)
-    r.raise_for_status()
-    return r.json().get("data", [])
+    out = []
+    params = {"account_id": ZIPNOVA_ACCOUNT_ID, "status": "ready_to_ship", "per_page": per_page}
+    
+    for page in range(1, max_pages + 1):
+        params["page"] = page
+        try:
+            r = requests.get(url, params=params, auth=HTTPBasicAuth(ZIPNOVA_KEY, ZIPNOVA_SECRET), timeout=30)
+            if not r.ok: break
+            
+            j = r.json()
+            out.extend(j.get("data", []))
+            
+            if not j.get("links", {}).get("next"): 
+                break
+        except Exception:
+            break
+    return out
 
 def get_detail(shipment_id: int):
     url = f"{ZIPNOVA_DOMAIN}/v2/shipments/{shipment_id}"
@@ -174,8 +187,12 @@ with col1:
                 for s in base:
                     if _uniq_key(s) in dispatched: continue
                     det = get_detail(s["id"])
-                    carrier = det.get("carrier") or {}
-                    if str(carrier.get("id")) == str(OWN_FLEET_CARRIER_ID):
+                    
+                    # Lógica de validación flexible integrada
+                    carrier_id = str(det.get("carrier_id") or det.get("carrier", {}).get("id") or "")
+                    carrier_nom = str(det.get("carrier", {}).get("name") or det.get("carrier_name") or "").strip().lower()
+                    
+                    if carrier_id == str(OWN_FLEET_CARRIER_ID) or "flete" in carrier_nom or "propio" in carrier_nom:
                         validos.append(det)
                 
                 st.session_state.pedidos = validos
@@ -233,10 +250,37 @@ with col2:
             st.warning("⚠️ Por favor, sube el archivo Excel en el recuadro de abajo antes de presionar el botón.")
         else:
             with st.spinner("Descargando paquetes 'En camino' y cruzando datos..."):
-                    envios_zipnova = list_in_transit()
-                    if not envios_zipnova:
-                        st.info("No hay envíos en camino en Zipnova para revisar.")
+                envios_zipnova = list_in_transit()
+                if not envios_zipnova:
+                    st.info("No hay envíos en camino en Zipnova para revisar.")
+                else:
+                    df = pd.read_excel(archivo_datos)
+                    df['Estado_Limpio'] = df['Estado'].astype(str).str.lower().str.strip()
+                    
+                    # --- LÓGICA DE CRUCE DE DATOS ---
+                    entregados_excel = df[df['Estado_Limpio'].str.contains("entregado", na=False)]
+                    
+                    # ATENCIÓN AQUÍ: Si la columna de tu Excel se llama distinto, cámbialo en la siguiente línea
+                    columna_id = 'idenvio' 
+                    
+                    if columna_id not in df.columns:
+                        st.error(f"❌ No se encontró la columna '{columna_id}' en tu Excel. Revisa el archivo.")
                     else:
-                        df = pd.read_excel(archivo_datos)
-                        df['Estado_Limpio'] = df['Estado'].astype(str).str.lower().str.strip()
+                        ids_entregados_excel = entregados_excel[columna_id].astype(str).tolist()
+                        ok_count = 0
                         
+                        for envio in envios_zipnova:
+                            zipnova_id = str(envio.get("id"))
+                            external_id = str(envio.get("external_id") or f"zipnova-{zipnova_id}")
+                            
+                            if zipnova_id in ids_entregados_excel or external_id in ids_entregados_excel:
+                                if update_zipnova_delivered(envio["id"]):
+                                    ok_count += 1
+                                    st.write(f"✅ Pedido #{zipnova_id} marcado como Entregado en Zipnova.")
+                                else:
+                                    st.warning(f"⚠️ Falló la actualización para el pedido #{zipnova_id}.")
+                        
+                        if ok_count > 0:
+                            st.success(f"🎉 ¡Actualización completada! {ok_count} pedidos pasaron a Entregado.")
+                        else:
+                            st.info("No se encontraron coincidencias nuevas para marcar como entregadas.")
