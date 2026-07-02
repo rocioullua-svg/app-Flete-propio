@@ -261,7 +261,7 @@ with col2:
                     entregados_excel = df[df['Estado_Limpio'].str.contains("entregado", na=False)]
                     
                     # ATENCIÓN AQUÍ: Si la columna de tu Excel se llama distinto, cámbialo en la siguiente línea
-                    columna_id = 'idenvio' 
+                    columna_id = 'Número Tracking' 
                     
                     if columna_id not in df.columns:
                         st.error(f"❌ No se encontró la columna '{columna_id}' en tu Excel. Revisa el archivo.")
