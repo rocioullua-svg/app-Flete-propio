@@ -1,5 +1,6 @@
-streamlit>=1.38.0
+streamlit
 pandas
 requests
 openpyxl
 xlrd
+starlette<0.38.0
