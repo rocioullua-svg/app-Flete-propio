@@ -129,7 +129,8 @@ def list_in_transit(max_pages=10, per_page=50) -> list:
                 j = r.json()
                 for s in j.get("data", []):
                     estado_actual = str(s.get("status") or s.get("state") or "").strip().lower()
-                    if estado_actual in ["delivered", "entregado"]: continue
+                    # Agregué que también ignore los que ya están en no entregado
+                    if estado_actual in ["delivered", "entregado", "not_delivered", "no entregado"]: continue
                     
                     carrier_id = str(s.get("carrier_id") or s.get("carrier", {}).get("id") or "")
                     carrier_nom = str(s.get("carrier", {}).get("name") or s.get("carrier_name") or "").strip().lower()
@@ -146,6 +147,15 @@ def list_in_transit(max_pages=10, per_page=50) -> list:
 def update_zipnova_delivered(shipment_id, comment="Entregado (Cruce con Excel LightData)") -> bool:
     url = f"{ZIPNOVA_DOMAIN}/v2/shipments/{shipment_id}/tracking"
     payload = {"status": "delivered", "comment": comment}
+    try: 
+        return requests.post(url, auth=HTTPBasicAuth(ZIPNOVA_KEY, ZIPNOVA_SECRET), json=payload, timeout=15).ok
+    except Exception: 
+        return False
+
+def update_zipnova_not_delivered(shipment_id, comment="No entregado (Cruce con Excel LightData)") -> bool:
+    url = f"{ZIPNOVA_DOMAIN}/v2/shipments/{shipment_id}/tracking"
+    # Nota: Si en Zipnova en vez de 'not_delivered' utilizan otra palabra clave en su sistema, cámbialo en la línea de abajo.
+    payload = {"status": "not_delivered", "comment": comment}
     try: 
         return requests.post(url, auth=HTTPBasicAuth(ZIPNOVA_KEY, ZIPNOVA_SECRET), json=payload, timeout=15).ok
     except Exception: 
@@ -221,11 +231,11 @@ with col1:
                 st.success(f"🎉 ¡Proceso terminado! {ok_count} pedidos sincronizados completamente.")
                 st.session_state.pedidos = []
 
-# --- COLUMNA 2: ACTUALIZAR ENTREGADOS ---
+# --- COLUMNA 2: ACTUALIZAR ENTREGADOS Y NO ENTREGADOS ---
 with col2:
     st.markdown("### 📥 2. Actualizar Envíos")
     
-    btn_actualizar = st.button("✔️ Actualizar Estado a Entregado", use_container_width=True)
+    btn_actualizar = st.button("✔️ Actualizar Estados (Excel)", use_container_width=True)
     archivo_datos = st.file_uploader("Sube tu Excel de LightData aquí", type=["xls", "xlsx"])
     
     if btn_actualizar:
@@ -243,29 +253,35 @@ with col2:
                         df = pd.read_excel(archivo_datos, dtype=str)
                         df['Estado_Limpio'] = df['Estado'].astype(str).str.lower().str.strip()
                         
-                        df_entregados = df[df['Estado_Limpio'].str.contains('entregado', case=False, na=False)]
+                        # FILTROS: Separamos "no entregado" de "entregado"
+                        mask_no_entregado = df['Estado_Limpio'].str.contains('no entregado', case=False, na=False)
+                        mask_entregado = df['Estado_Limpio'].str.contains('entregado', case=False, na=False) & ~mask_no_entregado
                         
-                        identificadores_excel = set()
+                        df_entregados = df[mask_entregado]
+                        df_no_entregados = df[mask_no_entregado]
                         
-                        if 'Número Tracking' in df_entregados.columns:
-                            # Forzamos todo a minúsculas para un match perfecto
-                            identificadores_excel.update(df_entregados['Número Tracking'].dropna().astype(str).str.strip().str.lower().tolist())
-                            
-                        col_ml = next((c for c in df.columns if 'id' in c.lower() and 'venta' in c.lower() and 'ml' in c.lower()), 'ID venta ML')
-                        if col_ml in df_entregados.columns:
-                            # Limpiamos los ".0" invisibles que a veces suma Excel a los números
-                            lista_ml = df_entregados[col_ml].dropna().astype(str).str.replace(r'\.0$', '', regex=True).str.strip().str.lower().tolist()
-                            identificadores_excel.update(lista_ml)
+                        # Función auxiliar para extraer IDs
+                        def obtener_ids(dataframe):
+                            ids = set()
+                            if 'Número Tracking' in dataframe.columns:
+                                ids.update(dataframe['Número Tracking'].dropna().astype(str).str.strip().str.lower().tolist())
+                            col_ml = next((c for c in dataframe.columns if 'id' in c.lower() and 'venta' in c.lower() and 'ml' in c.lower()), 'ID venta ML')
+                            if col_ml in dataframe.columns:
+                                lista_ml = dataframe[col_ml].dropna().astype(str).str.replace(r'\.0$', '', regex=True).str.strip().str.lower().tolist()
+                                ids.update(lista_ml)
+                            return ids
+
+                        ids_entregados = obtener_ids(df_entregados)
+                        ids_no_entregados = obtener_ids(df_no_entregados)
                         
-                        if not identificadores_excel:
+                        if not ids_entregados and not ids_no_entregados:
                             st.error("❌ No se encontró la columna 'Número Tracking' ni 'ID venta ML' en tu Excel.")
                         else:
-                            ok_count = 0
+                            ok_count_entregados = 0
+                            ok_count_no_entregados = 0
                             
                             for envio in envios_zipnova:
-                                # Forzamos minúsculas de este lado también
                                 zipnova_id = str(envio.get("id")).strip().lower()
-                                
                                 candidatos = {
                                     zipnova_id,
                                     f"zipnova-{zipnova_id}",
@@ -275,18 +291,25 @@ with col2:
                                 }
                                 candidatos.discard("")
                                     
-                                match_found = any(c in identificadores_excel for c in candidatos)
+                                match_entregado = any(c in ids_entregados for c in candidatos)
+                                match_no_entregado = any(c in ids_no_entregados for c in candidatos)
                                         
-                                if match_found:
-                                    # Ya no bloqueamos por caché local. Si llegó hasta acá, intentamos actualizar.
+                                if match_entregado:
                                     if update_zipnova_delivered(envio["id"]):
-                                        ok_count += 1
-                                        st.write(f"✅ Pedido #{envio['id']} marcado como Entregado en Zipnova.")
+                                        ok_count_entregados += 1
+                                        st.write(f"✅ Pedido #{envio['id']} marcado como Entregado.")
                                     else:
-                                        st.warning(f"⚠️ Falló la actualización para el pedido #{envio['id']}.")
+                                        st.warning(f"⚠️ Falló la actualización (Entregado) para #{envio['id']}.")
+                                
+                                elif match_no_entregado:
+                                    if update_zipnova_not_delivered(envio["id"]):
+                                        ok_count_no_entregados += 1
+                                        st.write(f"❌ Pedido #{envio['id']} marcado como No Entregado.")
+                                    else:
+                                        st.warning(f"⚠️ Falló la actualización (No Entregado) para #{envio['id']}.")
                                         
-                            if ok_count > 0:
-                                st.success(f"🎉 ¡TAREA FINALIZADA! Se actualizaron {ok_count} paquetes a 'Entregado'.")
+                            if ok_count_entregados > 0 or ok_count_no_entregados > 0:
+                                st.success(f"🎉 ¡TAREA FINALIZADA! Se actualizaron {ok_count_entregados} a 'Entregado' y {ok_count_no_entregados} a 'No Entregado'.")
                             else:
                                 st.info("👍 No se encontraron coincidencias nuevas para actualizar.")
                                 
